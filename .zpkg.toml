@@ -1,0 +1,10 @@
+[package]
+org = "zedtest"
+name = "subtree-consumer"
+version = "0.1.0"
+description = "Vendors the same shared content via git subtree instead of a submodule."
+license = "MIT"
+
+[package.repository]
+vcs = "git"
+url = "https://github.com/zed-pkg-test/subtree-consumer"

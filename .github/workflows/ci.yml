@@ -1,0 +1,118 @@
+name: vendoring CI (subtree)
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      # Deliberately NO `submodules:` flag -- the point is that a subtree needs
+      # nothing beyond an ordinary checkout.
+      - name: Check out this repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: subtree-consumer
+          persist-credentials: false
+
+      # zed-cli path-depends on ../zed-interfaces, so they must be siblings.
+      - name: Check out zed-cli
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: zed-pkg/zed-cli
+          path: zed-cli
+          persist-credentials: false
+      - name: Check out zed-interfaces
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: zed-pkg/zed-interfaces
+          path: zed-interfaces
+          persist-credentials: false
+
+      - name: Validate workflow
+        uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+        with:
+          args: subtree-consumer/.github/workflows/ci.yml
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v6
+        with:
+          node-version: 22
+
+      - name: Build the zed CLI
+        run: |
+          set -euo pipefail
+          cargo build --release --bin zed --manifest-path zed-cli/Cargo.toml
+          echo "ZED=$GITHUB_WORKSPACE/zed-cli/target/release/zed" >> "$GITHUB_ENV"
+
+      - name: The vendored content is ordinary tracked git content
+        working-directory: subtree-consumer
+        shell: bash
+        run: |
+          set -euo pipefail
+          # A submodule would show a single gitlink entry here instead of files.
+          git ls-files vendor/schema > "$RUNNER_TEMP/tracked.txt"
+          cat "$RUNNER_TEMP/tracked.txt"
+          grep -Fxq vendor/schema/schema.json "$RUNNER_TEMP/tracked.txt"
+          test ! -e .gitmodules
+          test ! -e vendor/schema/.git
+
+      - name: A plain checkout packs the complete artifact
+        working-directory: subtree-consumer
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$ZED" pack
+          tar tzf .zed/pack/zedtest-subtree-consumer-0.1.0.tar.gz \
+            > "$RUNNER_TEMP/listing.txt"
+          cat "$RUNNER_TEMP/listing.txt"
+          grep -Fxq pkg/vendor/schema/schema.json "$RUNNER_TEMP/listing.txt"
+          # No nested git pointer, because there is no nested repository.
+          if grep -q 'vendor/schema/.git' "$RUNNER_TEMP/listing.txt"; then
+            echo "::error::a git pointer leaked into the artifact"
+            exit 1
+          fi
+
+      - name: The published artifact runs
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/extract"
+          mkdir -p "$RUNNER_TEMP/extract"
+          tar xzf subtree-consumer/.zed/pack/zedtest-subtree-consumer-0.1.0.tar.gz \
+            -C "$RUNNER_TEMP/extract"
+          cd "$RUNNER_TEMP/extract/pkg"
+          test "$(node -e 'process.stdout.write(require("./src/index.js").TITLE)')" \
+             = "GreetingEvent"
+
+      - name: Packing from a fresh clone works too
+        shell: bash
+        run: |
+          set -euo pipefail
+          # This is precisely the case that silently drops content from
+          # submodule-consumer; a subtree has no initialization step to forget.
+          git clone -q subtree-consumer "$RUNNER_TEMP/fresh"
+          cd "$RUNNER_TEMP/fresh"
+          "$ZED" pack > /dev/null
+          tar tzf .zed/pack/zedtest-subtree-consumer-0.1.0.tar.gz > fresh.txt
+          grep -Fxq pkg/vendor/schema/schema.json fresh.txt
+
+      - name: Upload artifact listings
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: subtree-artifact-listings
+          path: ${{ runner.temp }}/*.txt
+          if-no-files-found: warn
+          retention-days: 7

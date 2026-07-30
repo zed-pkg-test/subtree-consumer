@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GreetingEvent",
+  "type": "object",
+  "required": ["who", "source"],
+  "properties": {
+    "who": { "type": "string" },
+    "source": { "type": "string" }
+  }
+}
